@@ -56,7 +56,8 @@ async def check_rust_kills(local_rust_user_data):
 
     if steam_kills > local_kills:
         new_kills = steam_kills-local_kills
-        await update_rust_data_file(steam_data, local_rust_user_data["discord_id"])
+        local_rust_data = await get_local_rust_data_object()
+        await update_rust_data_file(local_rust_data, steam_data, local_rust_user_data["discord_id"], False)
         return new_kills
     else:
         return 0
@@ -69,35 +70,77 @@ def create_rust_data_file():
         rust_data_file.write(json.dumps(json_template, indent=4, sort_keys=True))
 
 
-async def update_rust_data_file(data, discord_user_id):
-    with open('rust_data.json', "r") as rust_data:
-        all_rust_user_data = json.load(rust_data)
-
-    user_is_in_file = False
-    with open('rust_data.json', "w+") as rust_data:
-        for user in all_rust_user_data["users"]:
-            if user["discord_id"] == discord_user_id:
-                user["playerstats"] = data["playerstats"]
-                rust_data.write(json.dumps(all_rust_user_data, indent=4, sort_keys=True))
-                user_is_in_file = True
-                break
-    
-        if not user_is_in_file:
-            all_rust_user_data["users"].append({'discord_id':discord_user_id, 'playerstats':data["playerstats"]})
-            rust_data.write(json.dumps(all_rust_user_data, indent=4, sort_keys=True))
+async def update_rust_data_file(local_data, steam_data, discord_user_id, new):
+    if not new:
+        with open('rust_data.json', "w+") as rust_data:
+            for user in local_data["users"]:
+                if user["discord_id"] == discord_user_id:
+                    user["playerstats"] = steam_data["playerstats"]
+                    rust_data.write(json.dumps(local_data, indent=4, sort_keys=True))
+                    break
+    else:
+        local_data["users"].append({'discord_id':discord_user_id, 'playerstats':steam_data["playerstats"]})
+        rust_data.write(json.dumps(local_data, indent=4, sort_keys=True))
 
                 
 
 async def add_new_user_to_rust_data_file(steam_id, discord_id):
-
     steam_data = get_user_steam_rust_data(steam_id)
     if steam_data == 500: return 500
     else:
-        # TODO: check if user is already in json file     
-        await update_rust_data_file(steam_data, discord_id)
-        return steam_data
+        all_rust_user_data = await get_local_rust_data_object()
+        exists = await does_user_exist_by_steam_id(all_rust_user_data['users'], steam_data['playerstats']['steamID'])
+        if not exists:
+            await update_rust_data_file(all_rust_user_data, steam_data, discord_id, exists)
+            return steam_data
+        else: return 500
 
 
+async def delete_user_from_rust_data_file(steam_id):
+    all_rust_user_data = await get_local_rust_data_object()
+    exists = await does_user_exist_by_steam_id(all_rust_user_data['users'], steam_id)
+    if exists:
+        with open('rust_data.json', "w+") as rust_data:
+            for i, user in enumerate(all_rust_user_data["users"]):
+                if user['playerstats']['steamID'] == steam_id:
+                    del all_rust_user_data["users"][i]
+                    rust_data.write(json.dumps(all_rust_user_data, indent=4, sort_keys=True))
+                    break
+
+
+
+async def get_local_rust_data_object():
+    with open('rust_data.json', "r") as rust_data:
+        all_rust_user_data = json.load(rust_data)
+
+    return all_rust_user_data
+
+async def does_user_exist_by_steam_id(users, steam_id):
+    for user in users:
+        if user['playerstats']['steamID'] == steam_id:
+            return True
+    return False
+
+async def does_user_exist_by_discord_id(users, discord_id):
+    for user in users:
+        if user['discord_id'] == discord_id:
+            return True
+    return False
+
+async def get_user_with_discord_id(users, discord_id):
+    for user in users:
+        if user['discord_id'] == discord_id:
+            return user
+
+async def get_rust_data_for_user(data_attr, discord_id):
+    local_users = await get_local_rust_data_object()
+    exists = await does_user_exist_by_discord_id(local_users["users"], discord_id)
+    if exists:
+        user = await get_user_with_discord_id(local_users["users"], discord_id)
+        for stat in user['playerstats']['stats']:
+            if stat['name'] == data_attr:
+                return stat['value']
+        return "That attrabute does not exist."
 # *********************************************************************************
 # DISCORD CLIENT CODE
 # *********************************************************************************
@@ -119,10 +162,15 @@ class DiscordClient(discord.Client):
             else:
                 await message.channel.send("You steam ID has been assoiciated with your discord profile.")
 
+        if message.content.startswith('!delsteamid '):
+            steam_id = message.content[12: ]
+            response = await delete_user_from_rust_data_file(steam_id)
 
-        #TODO: make an delete !steamid command
+        if message.content.startswith('!rustdata '):
+            data_attr = message.content[10: ]
+            response = await get_rust_data_for_user(data_attr, message.author.id)
+            await message.channel.send(f"{message.author.display_name} - {data_attr} : {response}")
 
-        #TODO: Make a rust data message ex... !rust harvest.stones
 
 async def my_background_task():
     await client.wait_until_ready()
@@ -154,9 +202,10 @@ def get_members_playing_rust():
     for member in client.get_all_members():
         if len(member.activities) > 0:
             for activity in member.activities:
-                if activity.application_id == config["discord"]["game_id"]: 
-                    members_playing_rust_array.append(member)
-                    break
+                if hasattr(activity, "application_id"): 
+                    if activity.application_id == config["discord"]["game_id"]: 
+                        members_playing_rust_array.append(member)
+                        break
     return members_playing_rust_array
 
 
