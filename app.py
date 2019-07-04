@@ -6,6 +6,7 @@ import requests
 import json
 from os import path
 import logging
+from fuzzywuzzy import process
 
 logger = logging.getLogger('discord')
 logger.setLevel(logging.DEBUG)
@@ -57,30 +58,30 @@ async def check_rust_kills(local_rust_user_data):
     if steam_kills > local_kills:
         new_kills = steam_kills-local_kills
         local_rust_data = await get_local_rust_data_object()
-        await update_rust_data_file(local_rust_data, steam_data, local_rust_user_data["discord_id"], False)
+        await update_rust_data_file(local_rust_data, steam_data, local_rust_user_data["discord_id"], True)
         return new_kills
     else:
         return 0
 
 
 def create_rust_data_file():
-    with open("rust_data.json", "r") as rust_data_file:
+    with open("rust_data.json", "w+") as rust_data_file:
         json_template = {}
         json_template["users"] = []
         rust_data_file.write(json.dumps(json_template, indent=4, sort_keys=True))
 
 
-async def update_rust_data_file(local_data, steam_data, discord_user_id, new):
-    if not new:
-        with open('rust_data.json', "w+") as rust_data:
-            for user in local_data["users"]:
-                if user["discord_id"] == discord_user_id:
-                    user["playerstats"] = steam_data["playerstats"]
-                    rust_data.write(json.dumps(local_data, indent=4, sort_keys=True))
-                    break
-    else:
-        local_data["users"].append({'discord_id':discord_user_id, 'playerstats':steam_data["playerstats"]})
-        rust_data.write(json.dumps(local_data, indent=4, sort_keys=True))
+async def update_rust_data_file(local_data, steam_data, discord_user_id, exists):
+    with open('rust_data.json', "w+") as rust_data:
+        if exists:
+                for user in local_data["users"]:
+                    if user["discord_id"] == discord_user_id:
+                        user["playerstats"] = steam_data["playerstats"]
+                        rust_data.write(json.dumps(local_data, indent=4, sort_keys=True))
+                        break
+        else:
+            local_data["users"].append({'discord_id': discord_user_id, 'playerstats': steam_data["playerstats"]})
+            rust_data.write(json.dumps(local_data, indent=4, sort_keys=True))
 
                 
 
@@ -141,13 +142,28 @@ async def get_rust_data_for_user(data_attr, discord_id):
             if stat['name'] == data_attr:
                 return stat['value']
         return "That attrabute does not exist."
+
+async def get_rust_data_attribute(data_attr):
+    rust_attrs = await get_all_rust_attributes()
+    best_guess = process.extractOne(data_attr, rust_attrs)
+    return best_guess[0]
+
+async def get_all_rust_attributes():
+    with open('rust_attributes.json','r') as f:
+        rust_attrs = json.load(f)
+    return rust_attrs
+
+
+def create_rust_data_file_if_not_exist():
+    if not path.exists("rust_data.json"):
+        create_rust_data_file()
+
 # *********************************************************************************
 # DISCORD CLIENT CODE
 # *********************************************************************************
 class DiscordClient(discord.Client):
     async def on_ready(self):
         print('Logged on as', self.user)
-        #TODO: check if rust_data.json exists
 
 
     async def on_message(self, message):
@@ -167,7 +183,7 @@ class DiscordClient(discord.Client):
             response = await delete_user_from_rust_data_file(steam_id)
 
         if message.content.startswith('!rustdata '):
-            data_attr = message.content[10: ]
+            data_attr = await get_rust_data_attribute(message.content[10: ])
             response = await get_rust_data_for_user(data_attr, message.author.id)
             await message.channel.send(f"{message.author.display_name} - {data_attr} : {response}")
 
@@ -209,6 +225,8 @@ def get_members_playing_rust():
     return members_playing_rust_array
 
 
+
+create_rust_data_file_if_not_exist()
 client = DiscordClient()
 client.loop.create_task(my_background_task())
 client.run(config["discord"]["bot_token"])
